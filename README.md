@@ -1,143 +1,163 @@
-# Probability Solver Discord Bot
+# AI Recycling Assistant
 
-![Python](https://img.shields.io/badge/Python-3.8-3776AB?logo=python&logoColor=white)
-![discord.py](https://img.shields.io/badge/discord.py-1.7.3-5865F2?logo=discord&logoColor=white)
-![SciPy](https://img.shields.io/badge/SciPy-stats-8CAAE6?logo=scipy&logoColor=white)
-![NumPy](https://img.shields.io/badge/NumPy-1.22-013243?logo=numpy&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-15-000000?logo=nextdotjs&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![TensorFlow](https://img.shields.io/badge/TensorFlow-Keras-FF6F00?logo=tensorflow&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
 
-A Discord chatbot that solves common probability problems directly inside a chat channel. Type a command, pass in your parameters, and the bot replies with the relevant probabilities, intervals, and summary statistics — no switching between single-purpose calculator websites.
+A computer-vision web app that classifies a photographed item as **recyclable** or **non-recyclable**. Upload a photo or use your device camera, and the app returns a prediction with a confidence score.
 
-## Why this exists
+The project is a small monorepo with three independent layers: a TensorFlow/Keras image classifier (`ml/`), a FastAPI inference service (`backend/`), and a Next.js web client (`frontend/`) with file upload and live camera capture.
 
-Most online probability calculators handle one distribution at a time, so working through a problem set means hopping between several pages. This bot brings the **binomial**, **multinomial**, and **normal** distributions together behind one command prefix, and computes the full set of related quantities (PMF, CDF, tail probabilities, confidence intervals, mean/variance) in a single response. All numerical work is delegated to `scipy.stats`, so the results match standard statistical libraries.
+## Architecture
 
-## Features
+```
+┌───────────────┐    image (multipart)    ┌──────────────┐    image array   ┌─────────────────────┐
+│  Next.js UI   │ ──────────────────────▶ │  FastAPI API  │ ───────────────▶ │  InceptionV3        │
+│ (frontend/)   │     POST /predict       │  (backend/)   │                  │  + keyword mapping  │
+│ upload/camera │ ◀────────────────────── │               │ ◀─────────────── │  (ml/)              │
+└───────────────┘  { label, confidence }  └──────────────┘    prediction    └─────────────────────┘
+```
 
-The bot uses the `!` prefix. Run `!help` at any time to list every command with its description.
+## How classification works
 
-### Binomial — $X \sim \text{Binomial}(n, p)$
+The classifier used by the API (`SimpleRecyclingClassifier`) builds on **InceptionV3 pretrained on ImageNet**. For an uploaded image it:
 
-| Command | Syntax | Returns |
-| --- | --- | --- |
-| `!binom_prob` | `!binom_prob <n> <p> <x>` | PMF, CDF, and the tail probabilities $P(X < x)$, $P(X > x)$, $P(X \ge x)$ |
-| `!binom_bounds` | `!binom_bounds <n> <p> <x1> <x2>` | Probability that $X$ falls between two bounds (both exclusive and inclusive) |
-| `!binom_ci` | `!binom_ci <n> <p> <ci>` | Confidence interval at the requested level (e.g. `0.95`) |
-| `!binom_extra` | `!binom_extra <n> <p>` | Mean, median, and variance |
+1. Resizes to $299 \times 299$ and applies InceptionV3 preprocessing.
+2. Predicts the most likely ImageNet class.
+3. Maps that class to recyclable / non-recyclable using a keyword list (`bottle`, `can`, `carton`, `glass`, `plastic`, `metal`, and so on).
 
-**Example:** `!binom_prob 10 0.5 4`
+The batch-evaluation variant (`RecyclingClassifier` in `inceptionv3_pipeline.py`) is more robust: it takes the **top-5** ImageNet predictions, splits their probability mass between the two categories, and normalizes:
 
-### Multinomial — $(X_1, \dots, X_k) \sim \text{Multinomial}(n, \mathbf{p})$
+$$\text{conf}_{\text{recyclable}} = \frac{\sum_{i \in R} s_i}{\sum_i s_i}, \qquad \hat{y} = \arg\max\left(\text{conf}_{\text{recyclable}},\ \text{conf}_{\text{non-recyclable}}\right)$$
 
-| Command | Syntax | Returns |
-| --- | --- | --- |
-| `!multi_prob` | `!multi_prob <x1,x2,...> <p1,p2,...>` | Joint PMF for the given outcome counts; $n$ is inferred as the sum of the counts |
-| `!multi_extra` | `!multi_extra` | Formulas for the mean and variance of each component |
+where $s_i$ is the softmax score of the $i$-th ImageNet class and $R$ is the set of classes whose label matches a recyclable keyword.
 
-**Example:** `!multi_prob 2,3,5 0.2,0.3,0.5` (counts and probabilities are comma-separated, no spaces)
+A fine-tuned approach using a **MobileNetV2** base with a custom classification head is scaffolded in `ml/scripts/test_tf.py` and is the planned next step (see [Roadmap](#roadmap)).
 
-### Normal — $X \sim \mathcal{N}(\mu, \sigma^2)$
-
-| Command | Syntax | Returns |
-| --- | --- | --- |
-| `!norm_prob` | `!norm_prob <x> <mean> <sd>` | PDF, CDF (left tail), right tail, and the Z-score of $x$ |
-| `!norm_extra` | `!norm_extra` | Key properties of the normal distribution |
-
-**Example:** `!norm_prob 1.5 0 1`
-
-### Utility
-
-| Command | Syntax | Description |
-| --- | --- | --- |
-| `!calc` | `!calc <x> <op> <y>` | Basic calculator supporting `+`, `-`, `*`, `/` |
-| `!hello` | `!hello` | Greets the user |
-| `!random_music` | `!random_music` | Returns a random track from a small playlist (expect the occasional surprise) |
-
-## The math behind it
-
-Each command maps onto a standard closed-form expression, evaluated through `scipy.stats`.
-
-**Binomial PMF:**
-
-$$P(X = x) = \binom{n}{x} p^{x}(1 - p)^{n - x}, \qquad \mathbb{E}[X] = np, \qquad \operatorname{Var}(X) = np(1 - p)$$
-
-**Multinomial PMF:**
-
-$$P(X_1 = x_1, \dots, X_k = x_k) = \frac{n!}{x_1!\,x_2! \cdots x_k!}\, p_1^{x_1} p_2^{x_2} \cdots p_k^{x_k}, \qquad \sum_{i=1}^{k} x_i = n$$
-
-**Normal PDF and Z-score:**
-
-$$f(x) = \frac{1}{\sigma\sqrt{2\pi}}\, e^{-\frac{(x - \mu)^2}{2\sigma^2}}, \qquad z = \frac{x - \mu}{\sigma}$$
-
-## Tech stack
-
-- **Language:** Python 3.8
-- **Bot framework:** [discord.py](https://discordpy.readthedocs.io/) (commands extension)
-- **Numerics:** [SciPy](https://scipy.org/) (`scipy.stats`) and [NumPy](https://numpy.org/)
-- **Dependency management:** [Poetry](https://python-poetry.org/)
-
-## Project structure
+## Repository structure
 
 ```
 .
-├── main.py          # Bot entry point: command definitions and Discord event loop
-├── binomial.py      # Binomial distribution logic (prob, bounds, CI, summary stats)
-├── multinomial.py   # Multinomial distribution logic (joint prob, summary stats)
-├── normal.py        # Normal distribution logic (PDF, CDF, tails, Z-score)
-└── pyproject.toml   # Project metadata and dependencies (Poetry)
+├── ml/                          # Model + data pipeline (TensorFlow / Keras)
+│   ├── simple_classifier.py     # InceptionV3 + keyword mapping (used by the API)
+│   ├── inceptionv3_pipeline.py  # Top-5 evaluation pipeline + results writer
+│   ├── metrics.py               # accuracy / precision / recall / confusion matrix
+│   ├── resize.py, rename.py     # dataset preprocessing helpers
+│   ├── scripts/test_tf.py       # MobileNetV2 transfer-learning scaffold (WIP)
+│   └── datasets/                # train / val / test splits (recyclable, non_recyclable)
+├── backend/                     # FastAPI inference service
+│   └── main.py                  # GET / (health), POST /predict
+├── frontend/test-app/           # Next.js (React + TypeScript + Tailwind) client
+│   ├── app/page.tsx             # Home page
+│   └── components/ImageUploader.tsx   # upload + camera capture + result display
+└── results/inceptionv3_results.md     # sample evaluation output
 ```
 
-## Setup
+## Tech stack
 
-### Prerequisites
+- **Frontend:** Next.js 15 (Turbopack), React 19, TypeScript, Tailwind CSS v4
+- **Backend:** FastAPI, Uvicorn, Pillow, NumPy
+- **ML:** TensorFlow / Keras, scikit-learn; InceptionV3 (ImageNet) for inference, MobileNetV2 scaffold for future fine-tuning
+- **Dataset:** Kaggle — *Most Common Recyclable and Non-Recyclable Objects*
 
-- Python 3.8
-- A Discord account and a registered bot application
+## Dataset
 
-### 1. Create a Discord bot
+Images come from the Kaggle dataset *Most Common Recyclable and Non-Recyclable Objects*, organized into two classes across train / val / test splits:
 
-1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and create a new application.
-2. Under **Bot**, add a bot and copy its token.
-3. Under **OAuth2 → URL Generator**, select the `bot` scope and the permissions to read and send messages, then use the generated URL to invite the bot to your server.
+| Split | Recyclable | Non-recyclable |
+| ----- | ---------- | -------------- |
+| Train | 493 | 834 |
+| Val | 61 | 53 |
+| Test | 61 | 53 |
 
-### 2. Install dependencies
+Recyclable examples include bottles and cans; non-recyclable examples include juice boxes, milk cartons, styrofoam, and utensils. Preprocessing (square-crop and resize, then sequential renaming) is handled by `resize.py` and `rename.py`.
 
-Using Poetry:
+## Results
+
+On a held-out sample, the InceptionV3 + keyword approach reaches roughly **75%** accuracy. The raw ImageNet top prediction is also surfaced alongside each result for interpretability. Full sample predictions are in [`results/inceptionv3_results.md`](results/inceptionv3_results.md).
+
+## API
+
+Base URL (local): `http://localhost:8000`
+
+### `GET /` — health check
+
+```json
+{ "message": "Recycling Classifier API is running" }
+```
+
+### `POST /predict` — classify an uploaded image
+
+- **Body:** `multipart/form-data` with a `file` field (`image/*`)
+- **Response:**
+
+```json
+{
+  "label": "recyclable",
+  "confidence": 0.91,
+  "is_recyclable": true,
+  "original_label": "water_bottle"
+}
+```
+
+Example:
 
 ```bash
-poetry install
+curl -X POST http://localhost:8000/predict -F "file=@path/to/image.jpg"
 ```
 
-Or with `pip`:
+## Getting started
+
+**Prerequisites:** Python 3.10+ and Node.js 18+.
+
+### 1. Backend (FastAPI)
 
 ```bash
-pip install "discord.py==1.7.3" scipy numpy
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+# The API loads InceptionV3 via ml/simple_classifier.py, which requires TensorFlow:
+pip install tensorflow
+uvicorn main:app --reload --port 8000
 ```
 
-### 3. Provide the bot token
+The first prediction downloads the InceptionV3 ImageNet weights.
 
-The bot reads its token from an environment variable named `password`:
+### 2. Frontend (Next.js)
 
 ```bash
-export password="YOUR_DISCORD_BOT_TOKEN"
+cd frontend/test-app
+npm install
+npm run dev
 ```
 
-### 4. Run the bot
+Open `http://localhost:3000`. The client posts uploads to `http://localhost:8000/predict`, so keep the backend running.
+
+### 3. ML evaluation (optional)
 
 ```bash
-python main.py
+cd ml
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python inceptionv3_pipeline.py   # point the dataset path inside the script at ml/datasets first
 ```
-
-Once it is online in your server, send `!help` in any channel the bot can see to get started.
 
 ## Roadmap
 
-Ideas for future iterations:
+- Replace the ImageNet keyword heuristic with a **MobileNetV2** (or EfficientNet) classifier fine-tuned on the recycling dataset — the training scaffold already exists in `scripts/test_tf.py`.
+- Report full precision, recall, and a confusion matrix (`metrics.py` already supports these).
+- Load the trained model once at backend startup instead of re-instantiating it per request.
+- Containerize the backend and deploy the frontend (e.g. Vercel) for a public demo.
+- Extend beyond binary classification to material-specific categories (plastic / glass / metal / paper).
 
-- Additional distributions (Poisson, geometric, exponential)
-- Richer output using Discord embeds instead of plain messages
-- Stronger input validation and clearer error messages
-- Migration to Discord slash commands for autocomplete and inline help
+## License
 
-## Author
+See the [LICENSE](LICENSE) file.
 
-Nguyen The Quang — [github.com/nguyenthequang](https://github.com/nguyenthequang)
+## Team
+
+A collaborative project — see the repository's contributor list.
